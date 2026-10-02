@@ -1,0 +1,55 @@
+name: release
+
+# Triggered by release.bat, which pushes a tag like v1.2.3.
+on:
+  push:
+    tags: ['v*.*.*']
+
+permissions:
+  contents: write
+
+jobs:
+  check:
+    name: Check tag matches version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          file="$(grep -E '^version=' gradle.properties | head -n1 | cut -d= -f2 | tr -d '\r ')"
+          if [ "$tag" != "$file" ]; then
+            echo "::error::Tag v$tag does not match gradle.properties version $file"; exit 1
+          fi
+          echo "version=$tag" >> "$GITHUB_OUTPUT"
+
+  test:
+    name: Build and test
+    needs: check
+    uses: ./.github/workflows/build.yml
+    permissions:
+      contents: read
+
+  publish:
+    name: Publish GitHub Release
+    needs: [check, test]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: noctra-client-jar
+          path: dist
+      - name: Write manifest
+        run: |
+          python3 scripts/make-manifest.py "dist/noctra-client-${{ needs.check.outputs.version }}.jar" \
+            "${{ needs.check.outputs.version }}" "${{ github.repository }}" dist/manifest.json
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          v="${{ needs.check.outputs.version }}"
+          gh release create "v$v" "dist/noctra-client-$v.jar" dist/manifest.json \
+            --title "Noctra Client $v" --generate-notes --latest --verify-tag
